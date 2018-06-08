@@ -44,6 +44,7 @@ print("line: " .. serpent.line(a, {valignore = {[d] = true}}) .. "\n")
 local str = serpent.dump(a, {valignore = {[d] = true}})
 print("full: " .. str .. "\n")
 
+local loadstring = loadstring or load
 local fun, err = assert(loadstring(str))
 
 assert(loadstring(serpent.line(a, {name = '_'})), "line() method produces deserializable output: failed")
@@ -373,6 +374,45 @@ do
     assert(deepsame(x, x2),
       ("randomly generated values are the same after deserialization %d/%d (seed=%d): failed"):format(i, max, seed))
   end
+end
+
+do -- test for Lua 5.2 compiled without loadstring
+  local a = {function() return 1 end}
+
+  local load, loadstring = _G.load, _G.loadstring
+  local f = assert((loadstring or load)('load = loadstring or load; loadstring = nil; return '..serpent.line(a)),
+    "serializing table with function as a value (1/2): failed")
+  local _a = f()
+  assert(_a[1]() == a[1](), "deserialization of function value without loadstring (1/2): failed")
+  _G.load, _G.loadstring = load, loadstring
+
+  local f = assert((loadstring or load)('return '..serpent.line(a)),
+    "serializing table with function as a value (2/2): failed")
+  local _a = f()
+  assert(_a[1]() == a[1](), "deserialization of function value without loadstring (2/2): failed")
+end
+
+do
+  local ok, res = serpent.load("do error('not allowed') end")
+  assert(not ok and res:find("cannot call functions"),
+    "not allowing calling functions from serialized content: failed")
+
+  local print = _G.print
+  local ok, res = serpent.load("do print = error end")
+  assert(ok and _G.print == print and print ~= error,
+    "not allowing resetting `print` from serialized content (1/4): failed")
+
+  local ok, res = serpent.load("do _G.print = error end")
+  assert(ok and _G.print == print and _G.print ~= error,
+    "not allowing resetting `print` from serialized content (2/4): failed")
+
+  local ok, res = serpent.load("do _G._G.print = error end")
+  assert(ok and _G.print == print and print ~= error,
+    "not allowing resetting `print` from serialized content (3/4): failed")
+
+  local ok, res = serpent.load("do _G = nil _G.print = error end")
+  assert(ok and _G.print == print and print ~= error,
+    "not allowing resetting `print` from serialized content (4/4): failed")
 end
 
 print("All tests passed.")

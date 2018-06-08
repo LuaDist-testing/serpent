@@ -1,16 +1,16 @@
 -- This file was automatically generated for the LuaDist project.
 
 package = "serpent"
-version = "0.27-1"
+version = "0.28-1"
 -- LuaDist source
 source = {
-  tag = "0.27-1",
+  tag = "0.28-1",
   url = "git://github.com/LuaDist-testing/serpent.git"
 }
 -- Original source
 -- source = {
 --   url = "git://github.com/pkulchenko/serpent.git",
---   tag = "0.27"
+--   tag = "0.28"
 -- }
 
 description = {
@@ -21,7 +21,7 @@ description = {
 }
 
 dependencies = {
-  "lua >= 5.1, < 5.3",
+  "lua >= 5.1, < 5.4",
 }
 
 build = {
