@@ -16,9 +16,10 @@ Lua serializer and pretty printer.
 * Machine readable: provides reliable deserialization using `loadstring()`.
 * Supports deeply nested tables.
 * Supports tables with self-references.
-* Shared tables and functions stay shared after de/serialization.
+* Keeps shared tables and functions shared after de/serialization.
 * Supports function serialization using `string.dump()`.
 * Supports serialization of global functions.
+* Supports `__tostring` and `__serialize` metamethods.
 * Escapes new-line `\010` and end-of-file control `\026` characters in strings.
 * Configurable with options and custom formatters.
 
@@ -36,6 +37,10 @@ print(serpent.block(a)) -- multi-line indented, no self-ref section
 local fun, err = loadstring(serpent.dump(a))
 if err then error(err) end
 local copy = fun()
+
+-- or using serpent.load:
+local ok, copy = serpent.load(serpent.dump(a))
+print(ok and copy[3] == a[3])
 ```
 
 ## Functions
@@ -43,26 +48,36 @@ local copy = fun()
 Serpent provides three functions that are shortcuts to the same
 internal function, but set different options by default:
 
-* `dump(a[, {...}])` -- full serialization; sets `name`, `compact` and `sparse` options
-* `line(a[, {...}])` -- single line, no self-ref section; sets `sortkeys` and `comment` options
-* `block(a[, {...}])` -- multi-line indented, no self-ref section; sets `indent`, `sortkeys`, and `comment` options
+* `dump(a[, {...}])` -- full serialization; sets `name`, `compact` and `sparse` options;
+* `line(a[, {...}])` -- single line pretty printing, no self-ref section; sets `sortkeys` and `comment` options;
+* `block(a[, {...}])` -- multi-line indented pretty printing, no self-ref section; sets `indent`, `sortkeys`, and `comment` options.
+
+Note that `line` and `block` functions return pretty-printed data structures and if you want to deserialize them, you need to add `return` before running them through `loadstring`.
+For example: `loadstring('return '..require('mobdebug').line("foo"))() == "foo"`.
+
+While you can use `loadstring` or `load` functions to load serialized fragments, Serpent also provides `load` function that adds safety checks and reports an error if there is any executable code in the fragment.
+
+* `ok, res = serpent.load(str[, {safe = true}])` -- loads serialized fragment; you need to pass `{safe = false}` as the second value if you want to turn safety checks off.
+
+Similar to `pcall` and `loadstring` calls, `load` returns status as the first value and the result or the error message as the second value.
 
 ## Options
 
-* name (string) -- name; triggers full serialization with self-ref section
 * indent (string) -- indentation; triggers long multi-line output
-* comment (true/False/maxlevel) -- provide stringified value in a comment (up to maxlevel of depth)
-* sortkeys (true/False) -- sort keys
-* sparse (true/False) -- force sparse encoding (no nil filling based on #t)
-* compact (true/False) -- remove spaces
+* comment (true/false/maxlevel) -- provide stringified value in a comment (up to `maxlevel` of depth)
+* sortkeys (true/false/function) -- sort keys
+* sparse (true/false) -- force sparse encoding (no nil filling based on `#t`)
+* compact (true/false) -- remove spaces
 * fatal (true/False) -- raise fatal error on non-serilizable values
 * nocode (true/False) -- disable bytecode serialization for easy comparison
 * nohuge (true/False) -- disable checking numbers against undefined and huge values
 * maxlevel (number) -- specify max level up to which to expand nested tables
+* maxnum (number) -- specify max number of elements in a table
 * valignore (table) -- allows to specify a list of values to ignore (as keys)
 * keyallow (table) -- allows to specify the list of keys to be serialized. Any keys not in this list are not included in final output (as keys)
 * valtypeignore (table) -- allows to specify a list of value *types* to ignore (as keys)
 * custom (function) -- provide custom output for tables
+* name (string) -- name; triggers full serialization with self-ref section
 
 These options can be provided as a second parameter to Serpent functions.
 
@@ -72,10 +87,51 @@ line(a, {nocode = true, valignore = {[arrayToIgnore] = true}})
 function todiff(a) return dump(a, {nocode = true, indent = ' '}) end
 ```
 
+Serpent functions set these options to different default values:
+
+* `dump` sets `compact` and `sparse` to `true`;
+* `line` sets `sortkeys` and `comment` to `true`;
+* `block` sets `sortkeys` and `comment` to `true` and `indent` to `'  '`.
+
+## Metatables with __tostring and __serialize methods
+
+If a table or a userdata value has `__tostring` or `__serialize` method, the method will be used to serialize the value.
+If `__serialize` method is present, it will be called with the value as a parameter.
+if `__serialize` method is not present, but `__tostring` is, then `tostring` will be called with the value as a parameter.
+In both cases, the result will be serialized, so `__serialize` method can return a table, that will be serialize and replace the original value.
+
+## Sorting
+
+A custom sort function can be provided to sort the contents of tables. The function takes 2 parameters, the first being the table (a list) with the keys, the second the original table. It should modify the first table in-place, and return nothing.
+For example, the following call will apply a sort function identical to the standard sort, except that it will not distinguish between lower- and uppercase.
+
+```lua
+local mysort  = function(k, o) -- k=keys, o=original table
+  local maxn, to = 12, {number = 'a', string = 'b'}
+  local function padnum(d) return ("%0"..maxn.."d"):format(d) end
+  local sort = function(a,b)
+    -- this -vvvvvvvvvv- is needed to sort array keys first
+    return ((k[a] and 0 or to[type(a)] or 'z')..(tostring(a):gsub("%d+",padnum))):upper()
+         < ((k[b] and 0 or to[type(b)] or 'z')..(tostring(b):gsub("%d+",padnum))):upper()
+  end
+  table.sort(k, sort)
+end
+
+local content = { some = 1, input = 2, To = 3, serialize = 4 }
+local result = require('serpent').block(content, {sortkeys = mysort})
+```
+
 ## Formatters
 
 Serpent supports a way to provide a custom formatter that allows to fully
-customize the output. For example, the following call will apply
+customize the output. The formatter takes four values:
+
+* tag -- the name of the current element with '=' or an empty string in case of array index,
+* head -- an opening table bracket `{` and associated indentation and newline (if any),
+* body -- table elements concatenated into a string using commas and indentation/newlines (if any), and
+* tail -- a closing table bracket `}` and associated indentation and newline (if any).
+
+For example, the following call will apply
 `Foo{bar} notation to its output (used by Metalua to display ASTs):
 
 ```lua
@@ -129,6 +185,35 @@ Paul Kulchenko (paul@kulchenko.com)
 See LICENSE file.
 
 ## History
+
+### v0.27 (Jan 11 2014)
+  - Fixed order of elements in the array part with `sortkeys=true` (fixes #13).
+  - Updated custom formatter documentation (closes #11).
+  - Added `load` function to deserialize; updated documentation (closes #9).
+
+### v0.26 (Nov 05 2013)
+  - Added `load` function that (safely) loads serialized/pretty-printed values.
+  - Updated documentation.
+
+### v0.25 (Sep 29 2013)
+  - Added `maxnum` option to limit the number of elements in tables.
+  - Optimized processing of tables with numeric indexes.
+
+### v0.24 (Jun 12 2013)
+  - Fixed an issue with missing numerical keys (fixes #8).
+  - Fixed an issue with luaffi that returns `getmetatable(ffi.C)` as `true`.
+
+### v0.23 (Mar 24 2013)
+  - Added support for `cdata` type in LuaJIT (thanks to [Evan](https://github.com/neomantra)).
+  - Added comment to indicate incomplete output.
+  - Added support for metatables with __serialize method.
+  - Added handling of metatables with __tostring method.
+  - Fixed an issue with having too many locals in self-reference section.
+  - Fixed emitting premature circular reference in self-reference section, which caused invalid serialization.
+  - Modified the sort function signature to also pass the original table, so not only keys are available when sorting, but also the values in the original table.
+
+### v0.22 (Jan 15 2013)
+  - Added ability to process __tostring results that may be non-string values.
 
 ### v0.21 (Jan 08 2013)
   - Added `keyallow` and `valtypeignore` options (thanks to Jess Telford).
